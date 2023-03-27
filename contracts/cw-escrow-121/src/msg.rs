@@ -18,8 +18,9 @@ pub struct InstantiateMsg {
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Pays by distributing the funds according to what has been instructed by the gateway
-    SendFunds {},
+    Deposit {},
     Exchange {},
+    Withdraw {},
 }
 
 #[cw_serde]
