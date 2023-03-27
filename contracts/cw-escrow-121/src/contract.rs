@@ -18,6 +18,10 @@ pub fn instantiate(
         .api
         .addr_validate(&msg.party_a)
         .map_err(|_| ContractError::InvalidAddress)?;
+    let party_b_addr = deps
+        .api
+        .addr_validate(&msg.party_b)
+        .map_err(|_| ContractError::InvalidAddress)?;
     CONFIG.save(
         deps.storage,
         &Config {

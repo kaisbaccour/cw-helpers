@@ -1,5 +1,5 @@
 [package]
-name = "cw-escrow-121"
+name = "cw_escrow_121"
 version = "0.1.0"
 authors = ["Kais Baccour"]
 edition = "2021"
