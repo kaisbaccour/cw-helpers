@@ -1,55 +1,58 @@
 use cosmwasm_std::{
-    ensure_eq, entry_point, to_binary, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
-    QueryResponse, Response, StdResult, WasmMsg,
+    ensure_eq, entry_point, to_binary, BankMsg, Deps, DepsMut, Env, MessageInfo, QueryResponse,
+    Response, StdResult,
 };
 
 use crate::error::ContractError;
-use crate::msg::{ConfigResponse, ExecuteMsg, InstantiateMsg, NoisSinkExecuteMsg, QueryMsg};
-use crate::state::{Config, CONFIG};
+use crate::msg::{ConfigResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
+use crate::state::{Config, Party, CONFIG};
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
-    info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let party_a_addr = deps
+    let party_a = deps
         .api
         .addr_validate(&msg.party_a)
         .map_err(|_| ContractError::InvalidAddress)?;
-    let party_b_addr = deps
+    let party_b = deps
         .api
         .addr_validate(&msg.party_b)
         .map_err(|_| ContractError::InvalidAddress)?;
     CONFIG.save(
         deps.storage,
         &Config {
-            community_pool: nois_com_pool_addr,
-            sink: nois_sink_addr,
-            gateway: info.sender.clone(),
+            party_a: Party {
+                address: party_a,
+                funds: msg.party_a_funds,
+                deposited: false,
+            },
+            party_b: Party {
+                address: party_b,
+                funds: msg.party_b_funds,
+                deposited: false,
+            },
         },
     )?;
     Ok(Response::new()
         .add_attribute("action", "instantiate")
-        .add_attribute("nois_sink", msg.sink)
-        .add_attribute("nois_community_pool", msg.community_pool)
-        .add_attribute("nois_gateway", info.sender))
+        .add_attribute("party_a", msg.party_a)
+        .add_attribute("party_b", msg.party_b))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
-    env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
+    only_authorized_party(deps.as_ref(), info.clone())?;
     match msg {
-        ExecuteMsg::Pay {
-            burn,
-            community_pool,
-            relayer,
-        } => execute_pay(deps, info, env, burn, community_pool, relayer),
+        ExecuteMsg::Deposit {} => execute_deposit(deps, info),
+        ExecuteMsg::Exchange {} => execute_exchange(deps),
+        ExecuteMsg::Withdraw {} => execute_withdraw(deps, info),
     }
 }
 
@@ -66,71 +69,128 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     Ok(config)
 }
 
-fn execute_pay(
-    deps: DepsMut,
-    info: MessageInfo,
-    _env: Env,
-    burn: Coin,
-    community_pool: Coin,
-    relayer: (String, Coin),
-) -> Result<Response, ContractError> {
-    let funds = info.funds;
-    let config = CONFIG.load(deps.storage).unwrap();
+fn execute_deposit(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    let party_address = info.sender;
+    let mut new_config = config.clone();
 
-    // Make sure the caller is gateway to make sure malicious people can't drain someone else's payment balance
-    ensure_eq!(info.sender, config.gateway, ContractError::Unauthorized);
+    match party_address.clone() {
+        a if a == config.party_a.address => {
+            ensure_eq!(
+                info.funds,
+                config.party_a.funds,
+                ContractError::FundsNotEqualToConfig
+            );
+            ensure_eq!(
+                false,
+                config.party_a.deposited,
+                ContractError::FundsAlreadyDeposited
+            );
+            new_config.party_a.deposited = true;
+        }
+        b if b == config.party_b.address => {
+            ensure_eq!(
+                info.funds,
+                config.party_b.funds,
+                ContractError::FundsNotEqualToConfig
+            );
+            ensure_eq!(
+                false,
+                config.party_b.deposited,
+                ContractError::FundsAlreadyDeposited
+            );
+            new_config.party_b.deposited = true;
+        }
+        _ => return Err(ContractError::InvalidAddress),
+    };
 
-    // Check there are no funds. Not a payable Msg
-    if !funds.is_empty() {
-        return Err(ContractError::DontSendFunds);
+    CONFIG.save(deps.storage, &new_config)?;
+
+    let response = Response::new()
+        .add_attribute("action", "deposit")
+        .add_attribute("deposited_by", party_address.to_string());
+
+    Ok(response)
+}
+
+fn execute_withdraw(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    let party_address = info.sender;
+    let mut new_config = config.clone();
+
+    match party_address.clone() {
+        a if a == config.party_a.address => {
+            ensure_eq!(
+                true,
+                config.party_a.deposited,
+                ContractError::FundsHaventBeenDeposited
+            );
+            new_config.party_a.deposited = false;
+        }
+        b if b == config.party_b.address => {
+            ensure_eq!(
+                true,
+                config.party_b.deposited,
+                ContractError::FundsHaventBeenDeposited
+            );
+            new_config.party_b.deposited = false;
+        }
+        _ => return Err(ContractError::InvalidAddress),
+    };
+
+    CONFIG.save(deps.storage, &new_config)?;
+
+    let response = Response::new()
+        .add_attribute("action", "withdraw")
+        .add_attribute("withdrawn by", party_address.to_string());
+
+    Ok(response)
+}
+
+fn execute_exchange(deps: DepsMut) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    let mut new_config = config.clone();
+
+    // Check that party A deposited the funds
+    ensure_eq!(
+        true,
+        config.party_a.deposited,
+        ContractError::FundsHaventBeenDeposited
+    );
+    // Check that party B deposited the funds
+    ensure_eq!(
+        true,
+        config.party_b.deposited,
+        ContractError::FundsHaventBeenDeposited
+    );
+    new_config.party_a.deposited = false;
+    new_config.party_b.deposited = false;
+
+    CONFIG.save(deps.storage, &new_config)?;
+
+    let response = Response::new()
+        .add_attribute("action", "exchange")
+        .add_message(BankMsg::Send {
+            to_address: config.party_a.address.to_string(),
+            amount: config.party_b.funds,
+        })
+        .add_message(BankMsg::Send {
+            to_address: config.party_b.address.to_string(),
+            amount: config.party_a.funds,
+        });
+
+    Ok(response)
+}
+
+fn only_authorized_party(deps: Deps, info: MessageInfo) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+
+    // check the calling address is either party_a or party_b
+    if info.sender != config.party_a.address && info.sender != config.party_b.address {
+        return Err(ContractError::Unauthorized);
     }
-    // Check relayer addr is valid
-    deps.api
-        .addr_validate(relayer.0.as_str())
-        .map_err(|_| ContractError::InvalidAddress)?;
 
-    let mut out_msgs: Vec<CosmosMsg> = Vec::with_capacity(3);
-
-    // Burn
-    if !burn.amount.is_zero() {
-        out_msgs.push(
-            WasmMsg::Execute {
-                contract_addr: config.sink.to_string(),
-                msg: to_binary(&NoisSinkExecuteMsg::Burn {})?,
-                funds: vec![burn.clone()],
-            }
-            .into(),
-        );
-    }
-
-    // Send to relayer
-    if !relayer.1.amount.is_zero() {
-        out_msgs.push(
-            BankMsg::Send {
-                to_address: relayer.0.to_owned(),
-                amount: vec![relayer.1.clone()],
-            }
-            .into(),
-        );
-    }
-
-    // Send to community pool
-    if !community_pool.amount.is_zero() {
-        out_msgs.push(
-            BankMsg::Send {
-                to_address: config.community_pool.to_string(),
-                amount: vec![community_pool.clone()],
-            }
-            .into(),
-        );
-    }
-
-    Ok(Response::new()
-        .add_messages(out_msgs)
-        .add_attribute("burnt", burn.to_string())
-        .add_attribute("relayer_reward", relayer.1.to_string())
-        .add_attribute("relayer_address", relayer.0)
-        .add_attribute("sent_to_community_pool", community_pool.to_string()))
+    Ok(Response::default())
 }
 
 #[cfg(test)]
@@ -140,198 +200,138 @@ mod tests {
 
     use super::*;
     use cosmwasm_std::{
-        coins, from_binary,
-        testing::{mock_dependencies, mock_env, mock_info},
-        Addr, Attribute, Binary, Uint128,
+        from_binary,
+        testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage},
+        Addr, Coin, OwnedDeps,
     };
 
-    const NOIS_SINK: &str = "sink";
-    const NOIS_COMMUNITY_POOL: &str = "community_pool";
-    const NOIS_GATEWAY: &str = "nois-gateway";
+    const PARTY_A: &str = "alice";
+    const PARTY_B: &str = "bob";
 
-    /// Gets the value of the first attribute with the given key
-    pub fn first_attr(data: impl AsRef<[Attribute]>, search_key: &str) -> Option<String> {
-        data.as_ref().iter().find_map(|a| {
-            if a.key == search_key {
-                Some(a.value.clone())
-            } else {
-                None
-            }
-        })
+    fn setup() -> (OwnedDeps<MockStorage, MockApi, MockQuerier>, InstantiateMsg) {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            party_a: PARTY_A.to_string(),
+            party_b: PARTY_B.to_string(),
+            party_a_funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            party_b_funds: vec![Coin::new(5_000000, "ujuno")],
+        };
+        let res = instantiate(deps.as_mut(), mock_env(), msg.clone()).unwrap();
+        assert_eq!(0, res.messages.len());
+        (deps, msg)
     }
 
     #[test]
     fn instantiate_works() {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {
-            sink: NOIS_SINK.to_string(),
-            community_pool: NOIS_COMMUNITY_POOL.to_string(),
-        };
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let (mut deps, msg) = setup();
+        let res = instantiate(deps.as_mut(), mock_env(), msg).unwrap();
         assert_eq!(0, res.messages.len());
         let config: ConfigResponse =
             from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
         assert_eq!(
             config,
             ConfigResponse {
-                community_pool: Addr::unchecked(NOIS_COMMUNITY_POOL),
-                sink: Addr::unchecked(NOIS_SINK),
-                gateway: Addr::unchecked(NOIS_GATEWAY),
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
             }
         );
     }
-
     #[test]
-    fn cannot_send_funds() {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {
-            sink: NOIS_SINK.to_string(),
-            community_pool: NOIS_COMMUNITY_POOL.to_string(),
-        };
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let _result = instantiate(deps.as_mut(), mock_env(), info, msg);
-
-        let info = mock_info(NOIS_GATEWAY, &coins(12345, "unoisx"));
-        let msg = ExecuteMsg::Pay {
-            burn: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(500_000),
-            },
-            community_pool: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(450_000),
-            },
-            relayer: (
-                "some-relayer".to_string(),
-                Coin {
-                    denom: "unois".to_string(),
-                    amount: Uint128::new(50_000),
-                },
+    fn only_parties_can_deposit_withdraw_or_exchange() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        // Deposit
+        let msg = ExecuteMsg::Deposit {};
+        let err = execute(
+            deps.as_mut(),
+            mock_info(
+                "some_random_person",
+                &[Coin::new(1_000000, "unois"), Coin::new(3, "btc")],
             ),
-        };
-
-        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
-        assert!(matches!(err, ContractError::DontSendFunds));
-    }
-
-    #[test]
-    fn only_gateway_can_pay() {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {
-            sink: NOIS_SINK.to_string(),
-            community_pool: NOIS_COMMUNITY_POOL.to_string(),
-        };
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let _result = instantiate(deps.as_mut(), mock_env(), info, msg);
-
-        let info = mock_info("a-malicious-person", &[]);
-        let msg = ExecuteMsg::Pay {
-            burn: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(500_000),
-            },
-            community_pool: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(450_000),
-            },
-            relayer: (
-                "some-relayer".to_string(),
-                Coin {
-                    denom: "unois".to_string(),
-                    amount: Uint128::new(50_000),
-                },
-            ),
-        };
-
-        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+            msg,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized));
+        // Withdraw
+        let msg = ExecuteMsg::Withdraw {};
+        let err = execute(deps.as_mut(), mock_info("some_random_person", &[]), msg).unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized));
+        // Exchange
+        let msg = ExecuteMsg::Exchange {};
+        let err = execute(deps.as_mut(), mock_info("some_random_person", &[]), msg).unwrap_err();
         assert!(matches!(err, ContractError::Unauthorized));
     }
-
     #[test]
-    fn pay_fund_send_works() {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {
-            sink: NOIS_SINK.to_string(),
-            community_pool: NOIS_COMMUNITY_POOL.to_string(),
-        };
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let _result = instantiate(deps.as_mut(), mock_env(), info, msg);
-
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let msg = ExecuteMsg::Pay {
-            burn: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(500_000),
-            },
-            community_pool: Coin {
-                denom: "unois".to_string(),
-                amount: Uint128::new(450_000),
-            },
-            relayer: (
-                "some-relayer".to_string(),
-                Coin {
-                    denom: "unois".to_string(),
-                    amount: Uint128::new(50_000),
-                },
+    fn parties_need_to_deposit_exact_amount() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        // Party A
+        let err = execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(3, "btc")],
             ),
-        };
+            msg.clone(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::FundsNotEqualToConfig));
 
-        let response = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(response.messages.len(), 3); // 3 because we send funds to 3 different addresses (sink + relayer + com_pool)
-        assert_eq!(
-            response.messages[0].msg,
-            CosmosMsg::Wasm(WasmMsg::Execute {
-                contract_addr: "sink".to_string(),
-                msg: Binary::from(br#"{"burn":{}}"#),
-                funds: vec![Coin::new(500_000, "unois")],
-            })
-        );
-        assert_eq!(
-            response.messages[1].msg,
-            CosmosMsg::Bank(BankMsg::Send {
-                to_address: "some-relayer".to_string(),
-                amount: coins(50_000, "unois"),
-            })
-        );
-        assert_eq!(
-            response.messages[2].msg,
-            CosmosMsg::Bank(BankMsg::Send {
-                to_address: "community_pool".to_string(),
-                amount: coins(450_000, "unois"),
-            })
-        );
-        assert_eq!(
-            first_attr(&response.attributes, "burnt").unwrap(),
-            "500000unois"
-        );
-        assert_eq!(
-            first_attr(&response.attributes, "relayer_reward").unwrap(),
-            "50000unois"
-        );
-        assert_eq!(
-            first_attr(&response.attributes, "sent_to_community_pool").unwrap(),
-            "450000unois"
-        );
-
-        // Zero amount is supported
-        let info = mock_info(NOIS_GATEWAY, &[]);
-        let msg = ExecuteMsg::Pay {
-            burn: Coin::new(0, "unois"),
-            community_pool: Coin::new(0, "unois"),
-            relayer: ("some-relayer".to_string(), Coin::new(0, "unois")),
-        };
-        let response = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-        // 0 because sink does not like empty funds array and bank send does not like zero coins
-        assert_eq!(response.messages.len(), 0);
-        assert_eq!(first_attr(&response.attributes, "burnt").unwrap(), "0unois");
-        assert_eq!(
-            first_attr(&response.attributes, "relayer_reward").unwrap(),
-            "0unois"
-        );
-        assert_eq!(
-            first_attr(&response.attributes, "sent_to_community_pool").unwrap(),
-            "0unois"
-        );
+        // Check on party B
+        let err = execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(4_000000, "ujuno")]),
+            msg,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::FundsNotEqualToConfig));
+    }
+    #[test]
+    fn parties_cannot_deposit_twice() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        let err = execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::FundsAlreadyDeposited));
+        // Check on party B
+        execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg.clone(),
+        )
+        .unwrap();
+        let err = execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::FundsAlreadyDeposited));
     }
 }

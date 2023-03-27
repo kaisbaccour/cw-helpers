@@ -20,6 +20,5 @@ backtraces = ["cosmwasm-std/backtraces"]
 cosmwasm-std = { version = "1.2.3" }
 cosmwasm-schema = { version = "1.2.3" }
 cw-storage-plus = { version = "1.0.0" }
-cw-helpers.workspace = true
 serde = { version = "1.0.103", default-features = false, features = ["derive"] }
 thiserror = { version = "1.0.23" }

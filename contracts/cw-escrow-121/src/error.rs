@@ -7,8 +7,14 @@ pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
 
-    #[error("The sent funds are not equal to the agreed funds: {funds}")]
-    FundsNotEqualToConfig { funds: Vec<Coin> },
+    #[error("The deposited funds are not equal to the agreed funds")]
+    FundsNotEqualToConfig,
+
+    #[error("Funds haven't been deposited")]
+    FundsHaventBeenDeposited,
+
+    #[error("Funds already deposited")]
+    FundsAlreadyDeposited,
 
     #[error("Invalid Address")]
     InvalidAddress,

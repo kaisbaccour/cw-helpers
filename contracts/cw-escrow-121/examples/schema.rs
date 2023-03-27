@@ -1,6 +1,6 @@
 use cosmwasm_schema::write_api;
 
-use nois_payment::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
+use cw_escrow_121::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 
 fn main() {
     write_api! {

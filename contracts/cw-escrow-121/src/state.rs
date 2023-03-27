@@ -1,17 +1,24 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::Addr;
+use cosmwasm_std::{Addr, Coin};
 use cw_storage_plus::Item;
 
 #[cw_serde]
 pub struct Config {
-    /// The address of party A.
-    pub party_a: Addr,
-    /// The address of party B.
-    pub party_b: Addr,
-    /// The source funds from  party A
-    pub party_a_funds: Vec<Coin>,
-    /// The source funds from  party B
-    pub party_b_funds: Vec<Coin>,
+    /// party A.
+    pub party_a: Party,
+    /// party B.
+    pub party_b: Party,
+}
+
+#[cw_serde]
+pub struct Party {
+    /// The address of party
+    pub address: Addr,
+    /// The source funds from party
+    pub funds: Vec<Coin>,
+    /// Are funds deposited?
+    pub deposited: bool,
 }
 
 pub const CONFIG: Item<Config> = Item::new("config");
+pub const PARTY: Item<Config> = Item::new("party");
