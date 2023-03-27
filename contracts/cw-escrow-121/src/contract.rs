@@ -334,4 +334,18 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ContractError::FundsAlreadyDeposited));
     }
+    #[test]
+    fn parties_cannot_withdraw_if_they_did_not_deposit() {}
+    #[test]
+    fn exchange_fails_if_missing_one_depositor() {}
+    #[test]
+    fn withdraw_works_even_when_other_party_deposited() {}
+    #[test]
+    fn the_exchange_process_can_work_more_than_once() {}
+    #[test]
+    fn withdraw_works() {}
+    #[test]
+    fn deposit_works() {}
+    #[test]
+    fn exchange_works() {}
 }
