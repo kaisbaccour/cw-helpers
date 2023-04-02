@@ -356,7 +356,7 @@ mod tests {
         let msg = ExecuteMsg::Withdraw {};
         let err = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap_err();
         assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
-        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap_err();
+        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg).unwrap_err();
         assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
     }
 
@@ -371,11 +371,11 @@ mod tests {
                 PARTY_A,
                 &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
             ),
-            msg.clone(),
+            msg,
         )
         .unwrap();
         let msg = ExecuteMsg::Exchange {};
-        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap_err();
+        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg).unwrap_err();
         assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
     }
 
@@ -396,7 +396,7 @@ mod tests {
         execute(
             deps.as_mut(),
             mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
-            msg.clone(),
+            msg,
         )
         .unwrap();
         let config: ConfigResponse =
@@ -444,7 +444,7 @@ mod tests {
             }
         );
         // Make sure B can withdraw their money
-        let resp = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap();
+        let resp = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg).unwrap();
         assert_eq!(
             resp.messages[0].msg,
             CosmosMsg::Bank(BankMsg::Send {
@@ -489,7 +489,7 @@ mod tests {
         execute(
             deps.as_mut(),
             mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
-            msg.clone(),
+            msg,
         )
         .unwrap();
         let config: ConfigResponse =
@@ -510,7 +510,7 @@ mod tests {
             }
         );
         let msg = ExecuteMsg::Exchange {};
-        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg).unwrap();
         assert_eq!(
             resp.messages[0].msg,
             CosmosMsg::Bank(BankMsg::Send {
@@ -557,12 +557,12 @@ mod tests {
         execute(
             deps.as_mut(),
             mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
-            msg.clone(),
+            msg,
         )
         .unwrap();
 
         let msg = ExecuteMsg::Exchange {};
-        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg).unwrap();
         assert_eq!(
             resp.messages[0].msg,
             CosmosMsg::Bank(BankMsg::Send {
@@ -607,13 +607,13 @@ mod tests {
                 PARTY_A,
                 &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
             ),
-            msg.clone(),
+            msg,
         )
         .unwrap();
 
         let msg = ExecuteMsg::Withdraw {};
         // Make sure A can withdraw their money
-        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg).unwrap();
         assert_eq!(
             resp.messages[0].msg,
             CosmosMsg::Bank(BankMsg::Send {
@@ -651,7 +651,7 @@ mod tests {
                 PARTY_A,
                 &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
             ),
-            msg.clone(),
+            msg,
         )
         .unwrap();
         let config: ConfigResponse =
@@ -690,7 +690,7 @@ mod tests {
         execute(
             deps.as_mut(),
             mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
-            msg.clone(),
+            msg,
         )
         .unwrap();
         let config: ConfigResponse =
@@ -711,7 +711,7 @@ mod tests {
             }
         );
         let msg = ExecuteMsg::Exchange {};
-        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg).unwrap();
         assert_eq!(
             resp.messages[0].msg,
             CosmosMsg::Bank(BankMsg::Send {
