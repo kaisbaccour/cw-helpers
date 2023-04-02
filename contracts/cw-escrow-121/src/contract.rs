@@ -117,6 +117,7 @@ fn execute_withdraw(deps: DepsMut, info: MessageInfo) -> Result<Response, Contra
     let config = CONFIG.load(deps.storage)?;
     let party_address = info.sender;
     let mut new_config = config.clone();
+    let msg;
 
     match party_address.clone() {
         a if a == config.party_a.address => {
@@ -125,6 +126,10 @@ fn execute_withdraw(deps: DepsMut, info: MessageInfo) -> Result<Response, Contra
                 config.party_a.deposited,
                 ContractError::FundsHaventBeenDeposited
             );
+            msg = BankMsg::Send {
+                to_address: party_address.to_string(),
+                amount: config.party_a.funds,
+            };
             new_config.party_a.deposited = false;
         }
         b if b == config.party_b.address => {
@@ -133,16 +138,22 @@ fn execute_withdraw(deps: DepsMut, info: MessageInfo) -> Result<Response, Contra
                 config.party_b.deposited,
                 ContractError::FundsHaventBeenDeposited
             );
+            msg = BankMsg::Send {
+                to_address: party_address.to_string(),
+                amount: config.party_b.funds,
+            };
             new_config.party_b.deposited = false;
         }
         _ => return Err(ContractError::InvalidAddress),
     };
 
     CONFIG.save(deps.storage, &new_config)?;
+    // TODO send the funds
 
     let response = Response::new()
+        .add_message(msg)
         .add_attribute("action", "withdraw")
-        .add_attribute("withdrawn by", party_address.to_string());
+        .add_attribute("withdrawn_by", party_address.to_string());
 
     Ok(response)
 }
@@ -202,7 +213,7 @@ mod tests {
     use cosmwasm_std::{
         from_binary,
         testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage},
-        Addr, Coin, OwnedDeps,
+        Addr, Coin, CosmosMsg, OwnedDeps,
     };
 
     const PARTY_A: &str = "alice";
@@ -244,6 +255,7 @@ mod tests {
             }
         );
     }
+
     #[test]
     fn only_parties_can_deposit_withdraw_or_exchange() {
         let (mut deps, msg) = setup();
@@ -269,6 +281,7 @@ mod tests {
         let err = execute(deps.as_mut(), mock_info("some_random_person", &[]), msg).unwrap_err();
         assert!(matches!(err, ContractError::Unauthorized));
     }
+
     #[test]
     fn parties_need_to_deposit_exact_amount() {
         let (mut deps, msg) = setup();
@@ -295,6 +308,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ContractError::FundsNotEqualToConfig));
     }
+
     #[test]
     fn parties_cannot_deposit_twice() {
         let (mut deps, msg) = setup();
@@ -334,18 +348,400 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ContractError::FundsAlreadyDeposited));
     }
+
     #[test]
-    fn parties_cannot_withdraw_if_they_did_not_deposit() {}
+    fn parties_cannot_withdraw_if_they_did_not_deposit() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Withdraw {};
+        let err = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap_err();
+        assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
+        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap_err();
+        assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
+    }
+
     #[test]
-    fn exchange_fails_if_missing_one_depositor() {}
+    fn exchange_fails_if_missing_one_depositor() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        let msg = ExecuteMsg::Exchange {};
+        let err = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap_err();
+        assert!(matches!(err, ContractError::FundsHaventBeenDeposited));
+    }
+
     #[test]
-    fn withdraw_works_even_when_other_party_deposited() {}
+    fn withdraw_works_even_when_other_party_deposited() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg.clone(),
+        )
+        .unwrap();
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: true
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: true
+                },
+            }
+        );
+        let msg = ExecuteMsg::Withdraw {};
+        // Make sure A can withdraw their money
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_A.to_string(),
+                amount: vec![Coin::new(1000000, "unois"), Coin::new(2, "btc")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: true
+                },
+            }
+        );
+        // Make sure B can withdraw their money
+        let resp = execute(deps.as_mut(), mock_info(PARTY_B, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_B.to_string(),
+                amount: vec![Coin::new(5_000000, "ujuno")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+    }
+
     #[test]
-    fn the_exchange_process_can_work_more_than_once() {}
+    // This tests the case when party A and party B want to exchange native tokens on multiple batches using the same contract instance
+    fn the_exchange_process_can_work_more_than_once() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg.clone(),
+        )
+        .unwrap();
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: true
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: true
+                },
+            }
+        );
+        let msg = ExecuteMsg::Exchange {};
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_A.to_string(),
+                amount: vec![Coin::new(5_000000, "ujuno")],
+            })
+        );
+        assert_eq!(
+            resp.messages[1].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_B.to_string(),
+                amount: vec![Coin::new(1000000, "unois"), Coin::new(2, "btc")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+
+        // Make the deposit and exchange cycle again
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg.clone(),
+        )
+        .unwrap();
+
+        let msg = ExecuteMsg::Exchange {};
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_A.to_string(),
+                amount: vec![Coin::new(5_000000, "ujuno")],
+            })
+        );
+        assert_eq!(
+            resp.messages[1].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_B.to_string(),
+                amount: vec![Coin::new(1000000, "unois"), Coin::new(2, "btc")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+    }
+
     #[test]
-    fn withdraw_works() {}
+    fn withdraw_works() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+
+        let msg = ExecuteMsg::Withdraw {};
+        // Make sure A can withdraw their money
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_A.to_string(),
+                amount: vec![Coin::new(1000000, "unois"), Coin::new(2, "btc")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+    }
+
     #[test]
-    fn deposit_works() {}
+    fn deposit_works() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: true
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+    }
+
     #[test]
-    fn exchange_works() {}
+    fn exchange_works() {
+        let (mut deps, msg) = setup();
+        instantiate(deps.as_mut(), mock_env(), msg).unwrap();
+        let msg = ExecuteMsg::Deposit {};
+        execute(
+            deps.as_mut(),
+            mock_info(
+                PARTY_A,
+                &[Coin::new(1_000000, "unois"), Coin::new(2, "btc")],
+            ),
+            msg.clone(),
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_info(PARTY_B, &[Coin::new(5_000000, "ujuno")]),
+            msg.clone(),
+        )
+        .unwrap();
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: true
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: true
+                },
+            }
+        );
+        let msg = ExecuteMsg::Exchange {};
+        let resp = execute(deps.as_mut(), mock_info(PARTY_A, &[]), msg.clone()).unwrap();
+        assert_eq!(
+            resp.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_A.to_string(),
+                amount: vec![Coin::new(5_000000, "ujuno")],
+            })
+        );
+        assert_eq!(
+            resp.messages[1].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: PARTY_B.to_string(),
+                amount: vec![Coin::new(1000000, "unois"), Coin::new(2, "btc")],
+            })
+        );
+        let config: ConfigResponse =
+            from_binary(&query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            ConfigResponse {
+                party_a: Party {
+                    address: Addr::unchecked(PARTY_A),
+                    funds: vec![Coin::new(1_000000, "unois"), Coin::new(2, "btc")], // TODO permutation of coins should be accepted, order shouldn't matter
+                    deposited: false
+                },
+                party_b: Party {
+                    address: Addr::unchecked(PARTY_B),
+                    funds: vec![Coin::new(5_000000, "ujuno")],
+                    deposited: false
+                },
+            }
+        );
+    }
 }
